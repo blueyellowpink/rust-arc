@@ -13,9 +13,36 @@ use std::{
 struct Data<T> {
     // number of Arc
     arc_count: AtomicUsize,
-    // number of Weak, plus 1 for represent all Arcs
-    // alloc_count: AtomicUsize,
+    // number of Weak, plus 1 for representing all of Arcs
+    alloc_count: AtomicUsize,
+
     data: UnsafeCell<ManuallyDrop<T>>,
+}
+
+pub struct Weak<T> {
+    ptr: NonNull<Data<T>>,
+}
+
+impl<T> Weak<T> {
+    pub fn upgrade(&self) -> Arc<T> {
+        todo!()
+    }
+
+    fn data(&self) -> &Data<T> {
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+unsafe impl<T: Sync + Send> Send for Weak<T> {}
+unsafe impl<T: Sync + Send> Sync for Weak<T> {}
+
+impl<T> Drop for Weak<T> {
+    fn drop(&mut self) {
+        if self.data().alloc_count.fetch_sub(1, Release) == 1 {
+            fence(Acquire);
+            unsafe { drop(Box::from_raw(self.ptr.as_ptr())) }
+        }
+    }
 }
 
 pub struct Arc<T> {
@@ -26,11 +53,16 @@ impl<T> Arc<T> {
     pub fn new(data: T) -> Self {
         let data = Box::new(Data {
             arc_count: AtomicUsize::new(1),
+            alloc_count: AtomicUsize::new(1),
             data: UnsafeCell::new(ManuallyDrop::new(data)),
         });
         Self {
             ptr: NonNull::from(Box::leak(data)),
         }
+    }
+
+    pub fn downgrade(&self) -> Weak<T> {
+        todo!()
     }
 
     fn data(&self) -> &Data<T> {
