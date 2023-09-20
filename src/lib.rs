@@ -24,8 +24,26 @@ pub struct Weak<T> {
 }
 
 impl<T> Weak<T> {
-    pub fn upgrade(&self) -> Arc<T> {
-        todo!()
+    pub fn upgrade(&self) -> Option<Arc<T>> {
+        let mut n = self.data().alloc_count.load(Relaxed);
+        loop {
+            if n == 0 {
+                return None;
+            }
+
+            assert!(n <= usize::MAX / 2);
+
+            if let Err(e) =
+                self.data()
+                    .alloc_count
+                    .compare_exchange_weak(n, n + 1, Relaxed, Relaxed)
+            {
+                n = e;
+                continue;
+            }
+
+            return Some(Arc { ptr: self.ptr });
+        }
     }
 
     fn data(&self) -> &Data<T> {
@@ -35,6 +53,15 @@ impl<T> Weak<T> {
 
 unsafe impl<T: Sync + Send> Send for Weak<T> {}
 unsafe impl<T: Sync + Send> Sync for Weak<T> {}
+
+impl<T> Clone for Weak<T> {
+    fn clone(&self) -> Self {
+        if self.data().alloc_count.fetch_add(1, Relaxed) > usize::MAX / 2 {
+            abort();
+        }
+        Self { ptr: self.ptr }
+    }
+}
 
 impl<T> Drop for Weak<T> {
     fn drop(&mut self) {
@@ -61,7 +88,7 @@ impl<T> Arc<T> {
         }
     }
 
-    pub fn downgrade(&self) -> Weak<T> {
+    pub fn downgrade(arc: &Self) -> Weak<T> {
         todo!()
     }
 
@@ -94,7 +121,10 @@ impl<T> Drop for Arc<T> {
     fn drop(&mut self) {
         if self.data().arc_count.fetch_sub(1, Release) == 1 {
             fence(Acquire);
-            unsafe { ManuallyDrop::drop(&mut *self.data().data.get()) }
+            unsafe {
+                ManuallyDrop::drop(&mut *self.data().data.get());
+            }
+            drop(Weak { ptr: self.ptr });
         }
     }
 }
