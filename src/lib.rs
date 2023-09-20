@@ -25,7 +25,7 @@ pub struct Weak<T> {
 
 impl<T> Weak<T> {
     pub fn upgrade(&self) -> Option<Arc<T>> {
-        let mut n = self.data().alloc_count.load(Relaxed);
+        let mut n = self.data().arc_count.load(Relaxed);
         loop {
             if n == 0 {
                 return None;
@@ -33,10 +33,10 @@ impl<T> Weak<T> {
 
             assert!(n <= usize::MAX / 2);
 
-            if let Err(e) =
-                self.data()
-                    .alloc_count
-                    .compare_exchange_weak(n, n + 1, Relaxed, Relaxed)
+            if let Err(e) = self
+                .data()
+                .arc_count
+                .compare_exchange_weak(n, n + 1, Relaxed, Relaxed)
             {
                 n = e;
                 continue;
@@ -89,7 +89,18 @@ impl<T> Arc<T> {
     }
 
     pub fn downgrade(arc: &Self) -> Weak<T> {
-        todo!()
+        let mut n = arc.data().alloc_count.load(Relaxed);
+        loop {
+            if let Err(e) = arc
+                .data()
+                .alloc_count
+                .compare_exchange_weak(n, n + 1, Relaxed, Relaxed)
+            {
+                n = e;
+                continue;
+            }
+            return Weak { ptr: arc.ptr };
+        }
     }
 
     fn data(&self) -> &Data<T> {
@@ -141,24 +152,27 @@ fn test() {
         }
     }
 
-    let x = Arc::new(("hello", DetectDrop));
-    let y = x.clone();
-    let z = x.clone();
+    let arc = Arc::new(("hello", DetectDrop));
+    let weak = Arc::downgrade(&arc);
+
+    let upgraded = weak.upgrade();
+    assert!(upgraded.is_some());
 
     let t = std::thread::spawn({
-        let x = x.clone();
+        let arc = arc.clone();
         move || {
-            assert_eq!(x.0, "hello");
+            assert_eq!(arc.0, "hello");
         }
     });
-    assert_eq!(x.0, "hello");
+    assert_eq!(arc.0, "hello");
     t.join().unwrap();
 
     assert_eq!(NUM_DROPS.load(Relaxed), 0);
 
-    drop(x);
-    drop(y);
-    drop(z);
+    drop(arc);
+    drop(upgraded);
+
+    assert!(weak.upgrade().is_none());
 
     assert_eq!(NUM_DROPS.load(Relaxed), 1);
 }
